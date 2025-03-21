@@ -1,0 +1,6 @@
+add_executable(test test_edt.cu)
+add_executable(test_quantizer test_quantizer.cu)
+add_executable(test_boundary test_boundary.cu)
+add_executable(test_sz3_quantizer test_sz3_quantizer.cpp)
+add_executable(test_sign_map test_sign_map.cu) 
+add_executable(test_compensation test_compensation.cu)
