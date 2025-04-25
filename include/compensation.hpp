@@ -1,38 +1,13 @@
 #ifndef compensation
 #define compensation
+#include <cuda_runtime.h>
+#include <type_traits>
+#include "boundary.hpp" 
 
 // input: quantization index [0 as the middle point]
 // output: the boundary of the quantization index
 // b_tag: the boundary tag
 // rank: the number of dimensions
-template <typename T_data>
-__global__ void get_boundary(
-  T_data* input, char* output, char b_tag, int rank, uint width, uint height, uint depth)
-{
-  uint x = blockIdx.x * blockDim.x + threadIdx.x;  // fasted dimension
-  uint y = blockIdx.y * blockDim.y + threadIdx.y;
-  uint z = blockIdx.z * blockDim.z + threadIdx.z;  // depth
-  if (x >= width || y >= height || z >= depth) return;
-  int idx = x + y * width + z * width * height;
-  if (x == 0 || x == width - 1 || y == 0 || y == height - 1 || z == 0 || z == depth - 1) {
-    output[idx] = 0;
-    return;
-  }
-  // check the boundary
-  int idx_left = (x - 1) + y * width + z * width * height;
-  int idx_right = (x + 1) + y * width + z * width * height;
-  int idx_up = x + (y - 1) * width + z * width * height;
-  int idx_down = x + (y + 1) * width + z * width * height;
-  int idx_front = x + y * width + (z - 1) * width * height;
-  int idx_back = x + y * width + (z + 1) * width * height;
-
-  if (input[idx] != input[idx_left] || input[idx] != input[idx_right] ||
-      input[idx] != input[idx_up] || input[idx] != input[idx_down] ||
-      input[idx] != input[idx_front] || input[idx] != input[idx_back])
-    output[idx] = b_tag;
-  else
-    output[idx] = 0;
-}
 
 // given the quantization index map and the boundary map
 // calculate the sign of the edges
@@ -46,12 +21,12 @@ __device__ char get_sign(T_data_sign data) {
 
 
 __global__ void get_sign_map(
-    int* d_quant_inds, char* d_boundary, char* d_sign_map, int rank, uint width, uint height,
-    uint depth)
+    int* d_quant_inds, char* d_boundary, char* d_sign_map, int rank, int width, int height,
+    int depth)
 {
-  uint x = blockIdx.x * blockDim.x + threadIdx.x;  // fastest dimension depth 
-  uint y = blockIdx.y * blockDim.y + threadIdx.y;
-  uint z = blockIdx.z * blockDim.z + threadIdx.z;  // slowest dimension width
+  int x = blockIdx.x * blockDim.x + threadIdx.x;  // fastest dimension depth 
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+  int z = blockIdx.z * blockDim.z + threadIdx.z;  // slowest dimension width
   if (x >= width || y >= height || z >= depth) return;
   size_t stride_x = 1; 
   size_t stride_y = width;
@@ -85,7 +60,7 @@ __global__ void get_sign_map(
 
 
   // first dimension 
-  uint index; 
+  int index; 
 
   index = 2;
   tx = x - 1; ty = y; tz = z; 
@@ -192,23 +167,22 @@ __global__ void get_sign_map(
 
 template <typename T_distance, typename T_data, typename T_index> 
 __global__ void compensation_idw(char* boundary, T_distance* d_edge, T_index* idx_edge,  T_distance* d_neutral, 
-                                char* sign_map, T_data* quantized_data, T_data magnitude, uint width, uint height, uint depth) 
+                                char* sign_map, T_data* quantized_data, T_data magnitude, int width, int height, int depth) 
 {
-  uint x = blockIdx.x * blockDim.x + threadIdx.x;  // fastest dimension depth 
-  uint y = blockIdx.y * blockDim.y + threadIdx.y;
-  uint z = blockIdx.z * blockDim.z + threadIdx.z;  // slowest dimension width
+  int x = blockIdx.x * blockDim.x + threadIdx.x;  // fastest dimension depth 
+  int y = blockIdx.y * blockDim.y + threadIdx.y;
+  int z = blockIdx.z * blockDim.z + threadIdx.z;  // slowest dimension width
   if (x >= width || y >= height || z >= depth) return;
   size_t stride_x = 1; 
   size_t stride_y = width;
   size_t stride_z = width * height;
   int idx = x*stride_x + y*stride_y + z*stride_z; // fast to slowest 
-  size_t edge_index = idx_edge[idx*3]*stride_z + idx_edge[idx*3+1]*stride_y + idx_edge[idx*3+2]*stride_x;
-  
-  char sign = sign_map[edge_index]; 
+  char sign = sign_map[idx]; 
   T_distance d1 = d_edge[idx]+0.5;
   T_distance d2 = d_neutral[idx]+0.5;
   double val = (1/d1) / (1/d1 + 1/d2) * sign * magnitude;
   quantized_data[idx] = val + quantized_data[idx];
 }
+
 
 #endif
