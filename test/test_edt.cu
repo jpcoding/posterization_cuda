@@ -151,67 +151,11 @@ int main()
     vector<float> distanceData(width * height*depth); 
 
 
-	ifstream fin("bound3d.f32", ios::in | ios::binary);
-	fin.read((char*)inputData.data(), inputData.size() * sizeof(inputData[0]));
+	ifstream fin("boundary3d.int8", ios::in | ios::binary);
+	fin.read((char*)boundData.data(), boundData.size() * sizeof(boundData[0]));
 	fin.close();
-    for (int i = 0; i < width * height * depth; i++)
-    {
-        boundData[i] = (char)inputData[i];
-    }
 
     runCUDA(boundData.data(), outputData.data(), distanceData.data(), width, height, depth);
-
-    // // create device memory
-    // char* d_input;
-    // int* d_output;
-    // float* d_distance; 
-    // cudaMalloc(&d_input, width * height * depth * sizeof(char));
-    // cudaMalloc(&d_output, width * height * depth * 3 * sizeof(int));
-    // cudaMalloc(&d_distance, width * height * depth * sizeof(float)); 
-    // // copy data to device
-    // cudaMemcpy(d_input, boundData.data(), width * height * depth * sizeof(char), cudaMemcpyHostToDevice);
-    // // init the output data
-
-    // dim3 block(8, 8, 8);
-    // dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z);
-    // init_edt_3d<<<grid, block>>>(d_input, d_output, (char) 1, (int) 3, width, height, depth);
-    // cudaDeviceSynchronize();
-    // cudaError_t err = cudaGetLastError();
-    // // now perform the edt on the first dimension (slowest dimension)
-    // // each block process one line of data 
-
-    // int rank = 3; 
-    // size_t size = width * height * depth; 
-    // size_t width_stride = 3; 
-    // size_t height_stride = width * 3;
-    // size_t depth_stride = width * height * 3; 
-
-
-    // // depth direction
-    // // coordinats order [depth, height, width]
-    // dim3 block1(1,1, 1); 
-    // dim3 grid1(height, width,1 );  
-    // edt_depth<<<grid1, block1>>>(d_output, depth_stride, 3, 0, depth, height, width, height_stride,  width_stride);
-    // cudaDeviceSynchronize();
-    // // height direction
-    // dim3 block3(1,1,1);
-    // dim3 grid3(width, depth, 1);
-    // edt_depth<<<grid3, block3>>>(d_output, height_stride, 3, 1, height,  width, depth, width_stride, depth_stride); 
-    // cudaDeviceSynchronize();
-    // // width direction
-    // dim3 block2(1,1,1);
-    // dim3 grid2(depth, height,1);
-    // edt_depth<<<grid2, block2>>>(d_output, width_stride, 3, 2, width, depth, height, depth_stride, height_stride);
-    // cudaDeviceSynchronize();
-
-    // // write the output data to file
-    // cudaMemcpy(outputData.data(), d_output, width * height * depth * 3 * sizeof(int), cudaMemcpyDeviceToHost);
-    // cudaDeviceSynchronize();
-
-    // // calculate the distance
-    // calculate_distance<<<grid, block>>>(d_output, d_distance, 3, width, height, depth);
-    // cudaDeviceSynchronize();
-
 
     ofstream fout("output.i32", ios::out | ios::binary);
     fout.write((char*)outputData.data(), outputData.size() * sizeof(outputData[0]));
@@ -221,6 +165,9 @@ int main()
     ofstream fout1("distance.f32", ios::out | ios::binary);
     fout1.write((char*)distanceData.data(), distanceData.size() * sizeof(distanceData[0]));
     fout1.close();
+
+    double max_distance = *max_element(distanceData.begin(), distanceData.end());
+    printf("Max distance = %f\n", max_distance); 
 
 
     // cudaFree(d_input);

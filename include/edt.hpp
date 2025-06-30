@@ -149,6 +149,8 @@ __global__ void edt_depth_chunck(
   int f[256][3];
   int g[256];
 
+  int f[3][256]; 
+
   for (int ii = 0; ii < len; ii++) {
     int z = z_offset + ii;
     int* out_ptr = base_ptr + z * stride;
@@ -156,6 +158,13 @@ __global__ void edt_depth_chunck(
       f[ii][jj] = out_ptr[jj];
     }
   }
+
+  // copy from buffer to main memory 
+  {
+    
+  }
+
+  
   
   for (ii = 0; ii < len ; ii++) {
     if (f[ii][0] >= 0) {
@@ -362,6 +371,9 @@ void edt_3d_chunck(
       (depth + block.z - 1) / block.z);
 
   int num_chunks = 4; 
+
+
+  // limit number of threads in a block
 
   dim3 block1(32, 32, 1);
   dim3 grid1(

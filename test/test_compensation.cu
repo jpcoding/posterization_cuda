@@ -9,6 +9,7 @@
 #include "SZ3/quantizer/LinearQuantizer.hpp"
 #include<algorithm>
 #include "compensation.hpp"
+#include "boundary.hpp" 
 #include "edt.hpp"
 
 namespace SZ=SZ3; 
@@ -79,7 +80,7 @@ void verify(Type *ori_data, Type *data, size_t num_elements, double &psnr, doubl
     free(diff);
 }
 
-void run_cuda(int* quant_inds, float* quantized_data, size_t size, uint width, uint height, uint depth, double magnitude)
+void run_cuda(int* quant_inds, float* quantized_data, size_t size, uint width, uint height, uint depth, double magnitude, bool use_chunck= true)
 {
     // allocate memory on the device
     int* d_quant_inds;
@@ -109,84 +110,92 @@ void run_cuda(int* quant_inds, float* quantized_data, size_t size, uint width, u
     cudaMemcpy(d_quant_inds, quant_inds, size*sizeof(int), cudaMemcpyHostToDevice);
     cudaMemcpy(d_quantized_data, quantized_data, size*sizeof(float), cudaMemcpyHostToDevice);
 
+
+    auto start = std::chrono::high_resolution_clock::now();
     // boundary detect 
     {
         char b_tag = 1;
         dim3 block(8, 8, 8);
         dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z);
-        get_boundary<int><<<grid, block>>>(d_quant_inds, d_boundary, b_tag, 3, width, height, depth); 
-        cudaDeviceSynchronize();
-        get_sign_map<<<grid, block>>>(d_quant_inds,d_boundary,  d_sign_map, 3, width, height, depth);
-        cudaDeviceSynchronize();
+        // get_boundary<int><<<grid, block>>>(d_quant_inds, d_boundary, b_tag, 3, width, height, depth); 
+        // get_sign_map<<<grid, block>>>(d_quant_inds,d_boundary,  d_sign_map, 3, width, height, depth);
+        get_boundary_and_sign_map<int><<<grid, block>>>(d_quant_inds, d_boundary, d_sign_map, b_tag, 3, width, height, depth); 
+        // cudaDeviceSynchronize();
         // use sign map to create neutral boundary 
-        get_boundary<char><<<grid, block>>>(d_sign_map, d_boundary_neutral, b_tag, 3, width, height, depth);
-
-        std::vector<char> sign_map(size, 0);
-        cudaMemcpy(sign_map.data(), d_sign_map, size*sizeof(char), cudaMemcpyDeviceToHost);
-        SZ::writefile("sign_map_.uint8", sign_map.data(), size);
+        // fill boundary and compensation map 
+        // dump the boundary to the host 
+        if(0)
+        {
+            std::vector<char> boundary(size, 0);
+            cudaMemcpy(boundary.data(), d_boundary, size*sizeof(char), cudaMemcpyDeviceToHost);
+            SZ::writefile("boundary.uint8", boundary.data(), size);
+        }
+        if(0)
+        {
+            std::vector<char> sign_map(size, 0);
+            cudaMemcpy(sign_map.data(), d_sign_map, size*sizeof(char), cudaMemcpyDeviceToHost);
+            SZ::writefile("sign_map.uint8", sign_map.data(), size);
+        }
     }
     // edt core 1
-    {
-        size_t width_stride = 3; 
-        size_t height_stride = width * 3;
-        size_t depth_stride = width * height * 3; 
+    if(1){
+        if(!use_chunck) edt_3d(d_boundary, index_edge , distance_edge,   width, height, depth);
+        // edt_3d_bf(d_boundary, index_edge , distance_edge,   width, height, depth);
+        if(use_chunck)  edt_3d_chunck(d_boundary, index_edge , distance_edge,   width, height, depth);
 
-        dim3 block(8, 8, 8);
-        dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z); 
-        dim3 block1(16,16); 
-        dim3 grid1((height + block1.x - 1) / block1.x, (width + block1.y - 1) / block1.y);  
-        dim3 block3(16,16);
-        dim3 grid3((width+block3.x-1)/block3.x  , (depth + block3.y - 1) / block3.y );
-        dim3 block2(16,16);
-        dim3 grid2((depth +block2.x-1)/block2.x, (height+ block2.y - 1) / block2.y);
+        if(0)
+        {
+            std::vector<float> distance_host(size, 0);  
+            cudaMemcpy(distance_host.data(), distance_edge, size*sizeof(float), cudaMemcpyDeviceToHost);
+            SZ::writefile("distance_edge.dat", distance_host.data(), size);
 
-        init_edt_3d<<<grid, block>>>(d_boundary, index_edge, (char) 1, (int) 3, width, height, depth);
-        cudaDeviceSynchronize();
-        edt_depth<<<grid1, block1>>>(index_edge, depth_stride, 3, 0, depth, height, width, height_stride,  width_stride);
-        cudaDeviceSynchronize();
-        edt_depth<<<grid3, block3>>>(index_edge, height_stride, 3, 1, height,  width, depth, width_stride, depth_stride); 
-        cudaDeviceSynchronize();
-        edt_depth<<<grid2, block2>>>(index_edge, width_stride, 3, 2, width, depth, height, depth_stride, height_stride);
-        cudaDeviceSynchronize();
-        calculate_distance<<<grid, block>>>(index_edge, distance_edge, 3, width, height, depth);
-        cudaDeviceSynchronize();
-
-
-    }
-    // second round of edt
-    {
-        size_t width_stride = 3; 
-        size_t height_stride = width * 3;
-        size_t depth_stride = width * height * 3; 
-
-        dim3 block(8, 8, 8);
-        dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z); 
-        dim3 block1(16,16); 
-        dim3 grid1((height + block1.x - 1) / block1.x, (width + block1.y - 1) / block1.y);  
-        dim3 block3(16,16);
-        dim3 grid3((width+block3.x-1)/block3.x  , (depth + block3.y - 1) / block3.y );
-        dim3 block2(16,16);
-        dim3 grid2((depth +block2.x-1)/block2.x, (height+ block2.y - 1) / block2.y);
-
-        init_edt_3d<<<grid, block>>>(d_boundary_neutral, index_neutral, (char) 1, (int) 3, width, height, depth);
-        cudaDeviceSynchronize();
-        edt_depth<<<grid1, block1>>>(index_neutral, depth_stride, 3, 0, depth, height, width, height_stride,  width_stride);
-        cudaDeviceSynchronize();
-        edt_depth<<<grid3, block3>>>(index_neutral, height_stride, 3, 1, height,  width, depth, width_stride, depth_stride); 
-        cudaDeviceSynchronize();
-        edt_depth<<<grid2, block2>>>(index_neutral, width_stride, 3, 2, width, depth, height, depth_stride, height_stride);
-        cudaDeviceSynchronize();
-        calculate_distance<<<grid, block>>>(index_neutral, distance_neutral, 3, width, height, depth);
-        cudaDeviceSynchronize();
-
-        // // copy distance to the host and check 
-        // std::vector<float> distance_host(size, 0);
-        // cudaMemcpy(distance_host.data(), distance_neutral, size*sizeof(float), cudaMemcpyDeviceToHost);
-        // SZ::writefile("distance_edge.dat", distance_host.data(), size);
+            std::vector<int> index_host(size*3, 0);
+            cudaMemcpy(index_host.data(), index_edge, size*sizeof(int)*3, cudaMemcpyDeviceToHost);
+            SZ::writefile("index_edge.dat", index_host.data(), size*3);
+        }
     }
 
+    if(1){
+        // fill sign and compensation 
+        dim3 block(8, 8, 8);
+        dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z);
+        fill_sign_and_compensation<<<grid, block>>>(d_sign_map, d_boundary, index_edge,magnitude, width, height, depth);
+        cudaDeviceSynchronize();
+        if(0)
+        {
+            std::vector<char> sign_map(size, 0);
+            cudaMemcpy(sign_map.data(), d_sign_map, size*sizeof(char), cudaMemcpyDeviceToHost);
+            SZ::writefile("sign_map.uint8", sign_map.data(), size);
+        }
+    }
+
+    if(1){
+        char b_tag = 1; 
+        dim3 block(8, 8, 8);
+        dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z);
+        get_boundary<char><<<grid, block>>>(d_sign_map, d_boundary_neutral, b_tag, 3, width, height, depth);
+        cudaDeviceSynchronize();
+        // filter boundary 
+        if(1)filter_boundary<<<grid, block>>>(d_boundary, d_boundary_neutral, b_tag, width, height, depth);
+        cudaDeviceSynchronize();
+        if(0)
+        {
+            std::vector<char> boundary(size, 0);
+            cudaMemcpy(boundary.data(), d_boundary_neutral, size*sizeof(char), cudaMemcpyDeviceToHost);
+            SZ::writefile("boundary_neutral.uint8", boundary.data(), size);
+        }
+    }
+
+    // second round of edts
+    if(1){
+        if(!use_chunck) edt_3d(d_boundary_neutral, index_neutral , distance_neutral,   width, height, depth);
+        if(use_chunck) edt_3d_chunck(d_boundary_neutral, index_neutral , distance_neutral,   width, height, depth);
+
+        // edt_3d_bf(d_boundary_neutral, index_neutral , distance_neutral,   width, height, depth);
+
+    }
     // compensation
-    {
+    if(1){
         dim3 block(8, 8, 8);
         dim3 grid((width + block.x - 1) / block.x, (height + block.y - 1) / block.y, (depth + block.z - 1) / block.z);
         // template <typename T_distance, typename T_data, typename T_index> 
@@ -196,13 +205,13 @@ void run_cuda(int* quant_inds, float* quantized_data, size_t size, uint width, u
                                          d_sign_map, d_quantized_data, magnitude, width, height, depth);
         cudaDeviceSynchronize();
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> diff = end-start;
+    printf("Elapsed time: %f\n", diff.count());
 
     // copy the data back to the host
-    cudaMemcpy(quant_inds, d_quant_inds, size*sizeof(int), cudaMemcpyDeviceToHost);
+    // cudaMemcpy(quant_inds, d_quant_inds, size*sizeof(int), cudaMemcpyDeviceToHost);
     cudaMemcpy(quantized_data, d_quantized_data, size*sizeof(float), cudaMemcpyDeviceToHost);
-
-    
-
     // free the memory
     cudaFree(d_quant_inds);
     cudaFree(d_quantized_data);
@@ -220,57 +229,43 @@ void run_cuda(int* quant_inds, float* quantized_data, size_t size, uint width, u
 
 int main(int argc, char** argv)
 {
-
-    if (argc < 2) {
+    if (argc < 3) {
         printf("Usage: %s <input_file> <relative_error_bound>\n", argv[0]);
-        printf("Example: %s testfloat_8_8_128.dat 32768 0 0\n", argv[0]);
+        printf("Example: %s testfloat_8_8_128.dat 32768 0 0 \n", argv[0]);
         return 0;
     }
-
     std::filesystem::path p{argv[1]} ;
     if (!std::filesystem::exists(p)) {
         printf("File %s does not exist\n", argv[1]);
         return 0;
     }
-
     size_t file_size = std::filesystem::file_size(p)/sizeof(float);
-
-
     std::vector<int> quant_inds(file_size, 0);
     std::vector<float> input_data(file_size, 0);
-
     SZ::readfile(argv[1],  file_size, input_data.data());
-
-
     std::vector<float> input_copy(file_size, 0); 
-
     std::copy(input_data.begin(), input_data.end(), input_copy.begin());
-
     float max = *std::max_element(input_data.begin(), input_data.end());
     float min = *std::min_element(input_data.begin(), input_data.end());
     printf("max: %f, min: %f\n", max, min);
     double eb = atof(argv[2])*(max - min);
     printf("relative eb: %.6f\n", atof(argv[2]));
     printf("absolute eb: %.6f\n", eb);
-
     // create a linear quantizer
     auto quantizer = SZ::LinearQuantizer<float>();
     quantizer.set_eb(eb);
+    bool use_chunck = bool(atoi(argv[3]));
 
+    std::cout << "use chunck edt: " << use_chunck << std::endl; 
     // iterate the input data and quantize it
     for (size_t i = 0; i < file_size; i++) {
         quant_inds[i] = quantizer.quantize_and_overwrite(input_data[i],0)-32768;
     }
     double psnr, nrmse, max_diff;
-    // void verify(Type *ori_data, Type *data, size_t num_elements, double &psnr, double &nrmse, double &max_diff) {
-
     verify(input_copy.data(), input_data.data(), file_size, psnr, nrmse, max_diff);
-
-    run_cuda(quant_inds.data(), input_data.data(), file_size, 384, 384, 256, eb*0.9);
-
+    run_cuda(quant_inds.data(), input_data.data(), file_size, 384, 384, 256, eb*0.9, use_chunck);
     double psnr2, nrmse2, max_diff2;
     verify(input_copy.data(), input_data.data(), file_size, psnr2, nrmse2, max_diff2);
-
     // write the quantized data to a file
     std::string output_file =  p.filename().string()+argv[2] + ".quant.i32";
     std::string out_data_file =  p.filename().string()+argv[2] + ".out";
